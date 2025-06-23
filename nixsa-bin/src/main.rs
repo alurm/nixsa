@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use libc::{signal, SIGINT, SIG_IGN};
 use shell_quote::{Bash, QuoteRefExt};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::os::unix::{fs::symlink, process::ExitStatusExt};
 use std::process::{Command, ExitCode};
 use std::{env, fs};
@@ -254,14 +254,14 @@ fn find_nixsa_root(path: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
 enum ParsedArgs {
     Help,
     Symlinks { basepath: Utf8PathBuf },
-    Run { basepath: Utf8PathBuf, cmd: String, args: Vec<String>, verbose: bool },
+    Run { basepath: Utf8PathBuf, cmd: String, args: VecDeque<String>, verbose: bool },
 }
 
-fn parse_args(args: Vec<String>) -> Result<ParsedArgs> {
+fn parse_args(argv0: String, path: String, args: VecDeque<String>) -> Result<ParsedArgs> {
     let proc_self_exe: &Utf8Path = "/proc/self/exe".into();
     let exe_realpath = proc_self_exe.read_link_utf8()?;
     let root = find_nixsa_root(&exe_realpath)?;
-    let name = <&Utf8Path>::from(args[0].as_str()).file_name().context("Expecting argv[0] to have a final element")?;
+    let name = <&Utf8Path>::from(argv0.as_str()).file_name().context("Expecting argv[0] to have a final element")?;
     match root {
         None => {
             if args.len() > 1 && (args[1] == "-h" || args[1] == "--help") {
@@ -280,7 +280,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs> {
                 bail!("{:?} is not a symlink", profile_path);
             }
             if name != "nixsa" {
-                Ok(ParsedArgs::Run { basepath, cmd: name.into(), args: args[1..].into(), verbose: false })
+                Ok(ParsedArgs::Run { basepath, cmd: name.into(), args, verbose: false })
             } else {
                 if args.len() > 1 && (args[1] == "-h" || args[1] == "--help") {
                     return Ok(ParsedArgs::Help);
@@ -299,8 +299,8 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs> {
                     verbose = false;
                 }
 
-                if args.len() == 1 {
-                    args.push(env::var("SHELL")?);
+                if args.len() == 0 {
+                    args.push_front(env::var("SHELL")?);
                 }
 
                 Ok(ParsedArgs::Run { basepath, cmd: args[1].clone(), args: args[2..].into(), verbose })
@@ -310,8 +310,10 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs> {
 }
 
 fn main() -> Result<ExitCode> {
-    let args0: Vec<String> = env::args().collect();
-    let args = parse_args(args0)?;
+    let mut args0: VecDeque<String> = env::args().collect();
+    let program_name = args0.pop_front().unwrap();
+    let path = args0.pop_front().context("Expected nixsa path to be the first argument")?;
+    let args = parse_args(program_name, path, args0)?;
     match args {
         ParsedArgs::Help => {
             print!("{}", DESCRIPTION);
